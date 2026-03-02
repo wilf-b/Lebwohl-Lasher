@@ -1,6 +1,3 @@
-# This code is not finished as there is an issue with the ghost cells causing a variable size of the tensor
-# this make calcualting the eigenvalues of the matrix hard to do dynamically.  
-
 """
 Mpi4py implementation of Python Lebwohl-Lasher code.  Based on the paper 
 P.A. Lebwohl and G. Lasher, Phys. Rev. A, 6, 426-429 (1972).
@@ -32,7 +29,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from mpi4py import MPI
-from numba import njit
 
 # ============================================================
 # MPI setup
@@ -50,15 +46,21 @@ left, right = cart.Shift(1, 1)
 
 # ============================================================
 def initdat_local(nx, ny):
-    '''
-    this needs modification
-    '''
+    """
+    Arguments:
+      nmax (int) = size of lattice to create (nmax,nmax).
+    Description:
+      Function to create and initialise the main data array that holds
+      the lattice.  Will return a square lattice (size nmax x nmax)
+	  initialised with random orientations in the range [0,2pi].
+	Returns:
+	  arr (float(nmax,nmax)) = array to hold lattice.
+    """
     arr = np.zeros((nx+2, ny+2))
     arr[1:-1,1:-1] = np.random.random((nx,ny))*2*np.pi
     return arr
 
 # ============================================================
-
 def halo_exchange(arr):
     """
     Perform nearest-neighbour halo exchange for a 2D domain-decomposed lattice.
@@ -197,20 +199,35 @@ def savedat(arr,nsteps,Ts,runtime,ratio,energy,order,nmax):
     FileOut.close()
 # ============================================================
 def one_energy(arr,ix,iy):
-
+    """
+    Arguments:
+	  arr (float(nmax,nmax)) = array that contains lattice data;
+	  ix (int) = x lattice coordinate of cell;
+	  iy (int) = y lattice coordinate of cell;
+      nmax (int) = side length of square lattice.
+    Description:
+      Function that computes the energy of a single cell of the
+      lattice taking into account periodic boundaries.  Working with
+      reduced energy (U/epsilon), equivalent to setting epsilon=1 in
+      equation (1) in the project notes.
+	Returns:
+	  en (float) = reduced energy of cell.
+    """
     en = 0.0
 
     # do not deal with coord of the neighbors as these are dealt with in
-
-    en += 0.5*(1-3*np.cos(arr[ix,iy]-arr[ix+1,iy])**2)
-    en += 0.5*(1-3*np.cos(arr[ix,iy]-arr[ix-1,iy])**2)
-    en += 0.5*(1-3*np.cos(arr[ix,iy]-arr[ix,iy+1])**2)
-    en += 0.5*(1-3*np.cos(arr[ix,iy]-arr[ix,iy-1])**2)
-
+    ang = arr[ix,iy]-arr[ix+1,iy]
+    en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
+    ang = arr[ix,iy]-arr[ix-1,iy]
+    en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
+    ang = arr[ix,iy]-arr[ix,iy+1]
+    en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
+    ang = arr[ix,iy]-arr[ix,iy-1]
+    en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
     return en
 
-# ============================================================
 
+# ============================================================
 def all_energy(arr):
     """
     Arguments:
@@ -229,7 +246,6 @@ def all_energy(arr):
     ny = arr.shape[1]-2
 
     enall = 0.0
-    # has to iterate one further owing to ghost cells
     for i in range(1,nx+1):
         for j in range(1,ny+1):
             enall += one_energy(arr,i,j)
@@ -237,7 +253,6 @@ def all_energy(arr):
     return comm.allreduce(enall, op=MPI.SUM)
 
 # ============================================================
-@njit
 def get_order(arr):
     """
     Arguments:
@@ -249,13 +264,16 @@ def get_order(arr):
 	Returns:
 	  max(eigenvalues(Qab)) (float) = order parameter for lattice.
     """
+    # get lattice size (excluding ghost cells)
     nx = arr.shape[0]-2
     ny = arr.shape[1]-2
     #
     # Generate a 3D unit vector for each cell (i,j) and
     # put it in a (3,i,j) array.
     #
-    lab = np.vstack((
+
+    # build 3D unit vectors (cos, sin, 0) for interior spins
+    labels = np.vstack((
         np.cos(arr[1:-1,1:-1]),
         np.sin(arr[1:-1,1:-1]),
         np.zeros((nx,ny))
@@ -263,142 +281,172 @@ def get_order(arr):
 
     Qab = np.zeros((3,3))
 
-    for v in lab.T:
+    for v in labels.T:
         Qab += 3*np.outer(v,v)-np.eye(3)
 
     Qab /= (2*nx*ny)
-
+    # sum qab across all ranks 
     Qab = comm.allreduce(Qab, op=MPI.SUM)
-    # this is causing issues as the tensor is not of a defined shape owing top the ghost cells 
-    # as ;attice is (nx+2,ny+2)
-    eigenvalues,eigvec = np.linalg.eigvals(Qab)
+
+    eigenvalues = np.linalg.eigvals(Qab)
 
     return eigenvalues.max()
 
 # ============================================================
-@njit
-def MC_step(arr,Ts):
+def MC_step(arr, Ts):
     """
     Arguments:
-	  arr (float(nmax,nmax)) = array that contains lattice data;
-	  Ts (float) = reduced temperature (range 0 to 2);
-      nmax (int) = side length of square lattice.
+      arr (float(nx+2,ny+2)) = local lattice data including ghost cells;
+      Ts (float) = reduced temperature (range 0 to 2).
     Description:
-      Function to perform one MC step, which consists of an average
-      of 1 attempted change per lattice site.  Working with reduced
-      temperature Ts = kT/epsilon.  Function returns the acceptance
-      ratio for information.  This is the fraction of attempted changes
-      that are successful.  Generally aim to keep this around 0.5 for
-      efficient simulation.
-	Returns:
-	  accept/(nmax**2) (float) = acceptance ratio for current MCS.
+      Function to perform one MC step (MCS), consisting of an average
+      of 1 attempted change per local lattice site.  Working with reduced
+      temperature Ts = kT/epsilon.  Returns the global acceptance ratio
+      for information (fraction of attempted changes that are successful).
+    Returns:
+      (float) = global acceptance ratio for current MCS.
     """
+    #
+    # Update ghost cells once at the start of the sweep so neighbour
+    # values are consistent for boundary sites.
+    #
+    halo_exchange(arr)
+
+    nx = arr.shape[0] - 2
+    ny = arr.shape[1] - 2
+
     #
     # Pre-compute some random numbers.  This is faster than
     # using lots of individual calls.  "scale" sets the width
     # of the distribution for the angle changes - increases
     # with temperature.
-    halo_exchange(arr)
-
-    nx = arr.shape[0]-2
-    ny = arr.shape[1]-2
-
+    #
     scale = 0.1 + Ts
-
     accept = 0
 
-    for i in range(1,nx+1):
-        for j in range(1,ny+1):
+    # choose random interior sites (local coordinates 1..nx, 1..ny)
+    xran = np.random.randint(1, high=nx+1, size=(nx, ny))
+    yran = np.random.randint(1, high=ny+1, size=(nx, ny))
 
-            old = arr[i,j]
+    # proposed angle changes
+    aran = np.random.normal(scale=scale, size=(nx, ny))
 
-            en0 = one_energy(arr,i,j)
+    for i in range(nx):
+        for j in range(ny):
 
-            arr[i,j] += np.random.normal(scale=scale)
+            ix = xran[i, j]
+            iy = yran[i, j]
+            ang = aran[i, j]
 
-            en1 = one_energy(arr,i,j)
+            en0 = one_energy(arr, ix, iy)
+
+            arr[ix, iy] += ang
+
+            en1 = one_energy(arr, ix, iy)
 
             if en1 <= en0:
                 accept += 1
             else:
-                boltz = np.exp(-(en1-en0)/Ts)
+                # Now apply the Monte Carlo test - compare
+                # exp( -(E_new - E_old) / T* ) >= rand(0,1)
+                boltz = np.exp(-(en1 - en0) / Ts)
 
-                if boltz >= np.random.rand():
+                if boltz >= np.random.uniform(0.0, 1.0):
                     accept += 1
                 else:
-                    arr[i,j] = old
+                    arr[ix, iy] -= ang
 
+    # reduce acceptance count across all ranks
     total_accept = comm.allreduce(accept, op=MPI.SUM)
 
-    total_sites = nx*ny*size
+    # total attempted moves globally (one attempt per local site)
+    total_sites = (nx * ny) * size
 
-    return total_accept/total_sites
-
+    return total_accept / total_sites
 # ============================================================
-def gather_lattice(local,nmax):
+def gather_lattice(local, nmax):
+    """
+    Arguments:
+      local (float(nx+2,ny+2)) = local lattice block including ghost cells;
+      nmax (int) = side length of the global square lattice.
+    Description:
+      Function to gather the interior lattice blocks from all MPI ranks
+      onto the root process (rank 0).  Ghost cells are excluded.
+      The gathered lattice is used for plotting and output.
+    Returns:
+      recvbuf (float(nmax,nmax)) = full lattice on rank 0;
+      None on all other ranks.
+    """
 
-    nx = local.shape[0]-2
-    ny = local.shape[1]-2
+    # determine interior lattice size (exclude ghost cells)
+    nx = local.shape[0] - 2
+    ny = local.shape[1] - 2
 
-    sendbuf = local[1:-1,1:-1].copy()
+    # extract interior block to send to root
+    sendbuf = local[1:-1, 1:-1].copy()
 
     recvbuf = None
 
+    # root allocates array for full lattice
     if rank == 0:
-        recvbuf = np.empty((nmax,nmax))
+        recvbuf = np.empty((nmax, nmax))
 
+    # gather all local blocks onto root process
     comm.Gather(sendbuf, recvbuf, root=0)
 
     return recvbuf
 
 # ============================================================
 def main(program, nsteps, nmax, temp, pflag):
-
+    """
+    Arguments:
+	  program (string) = the name of the program;
+	  nsteps (int) = number of Monte Carlo steps (MCS) to perform;
+      nmax (int) = side length of square lattice to simulate;
+	  temp (float) = reduced temperature (range 0 to 2);
+	  pflag (int) = a flag to control plotting.
+    Description:
+      This is the main function running the Lebwohl-Lasher simulation.
+    Returns:
+      NULL
+    """
     nx_local = nmax//dims[0]
     ny_local = nmax//dims[1]
-
+    # Create and initialise lattice
     lattice = initdat_local(nx_local,ny_local)
-
+    # Plot initial frame of lattice
+    plotdat(lattice,pflag,nmax)
+    # Create arrays to store energy, acceptance ratio and order parameter
     full0 = gather_lattice(lattice,nmax)
     plotdat(full0,pflag,nmax)
 
-    energy = np.zeros(nsteps+1)
-    ratio = np.zeros(nsteps+1)
-    order = np.zeros(nsteps+1)
-
+    energy = np.zeros(nsteps+1,dtype=float)
+    ratio = np.zeros(nsteps+1,dtype=float)
+    order = np.zeros(nsteps+1,dtype=float)
+    # Set initial values in arrays
     energy[0] = all_energy(lattice)
-    ratio[0] = 0.5
+    ratio[0] = 0.5 # ideal value
     order[0] = get_order(lattice)
 
-    comm.Barrier()
-
+    # Begin doing and timing some MC steps.
     initial = time.time()
-
     for it in range(1,nsteps+1):
-
         ratio[it] = MC_step(lattice,temp)
         energy[it] = all_energy(lattice)
         order[it] = get_order(lattice)
-
-    comm.Barrier()
-
     final = time.time()
-
     runtime = final-initial
+ 
+    # Final outputs
+    print("{}: Size: {:d}, Steps: {:d}, T*: {:5.3f}: Order: {:5.3f}, Time: {:8.6f} s".format(program, nmax,nsteps,temp,order[nsteps-1],runtime))
+    # Plot final frame of lattice and generate output file
+    savedat(lattice,nsteps,temp,runtime,ratio,energy,order,nmax)
+    plotdat(lattice,pflag,nmax)
 
-    full = gather_lattice(lattice,nmax)
-
-    if rank==0:
-
-        print("{}: Size: {:d}, Steps: {:d}, T*: {:5.3f}: Order: {:5.3f}, Time: {:8.6f} s".format(
-            program,nmax,nsteps,temp,order[nsteps-1],runtime))
-
-    savedat(full,nsteps,temp,runtime,ratio,energy,order,nmax)
-
-    plotdat(full,pflag,nmax)
-
-# ============================================================
-
+#=======================================================================
+# Main part of program, getting command line arguments and calling
+# main simulation function.
+#
 if __name__ == '__main__':
     if int(len(sys.argv)) == 5:
         PROGNAME = sys.argv[0]

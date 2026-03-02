@@ -204,7 +204,7 @@ def get_order(arr,nmax):
         np.zeros_like(arr)
     ), axis=0).reshape(3, -1)
 
-    # Compute Q tensor using matrix multiplication
+    # Compute Q using matrix multiplication
     Qab = (3 * lab @ lab.T) / (2 * lab.shape[1])
 
     # subtract identity contribution
@@ -247,14 +247,7 @@ def MC_step(arr,Ts,nmax):
             if en1<=en0:
                 accept += 1
             else:
-            # Now apply the Monte Carlo test - compare
-            # exp( -(E_new - E_old) / T* ) >= rand(0,1)
-                boltz = np.exp( -(en1 - en0) / Ts )
-
-                if boltz >= np.random.uniform(0.0,1.0):
-                    accept += 1
-                else:
-                    arr[ix,iy] -= ang
+                arr[ix,iy] -= ang
     return accept/(nmax*nmax)
 #=======================================================================
 
