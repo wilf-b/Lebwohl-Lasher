@@ -1,5 +1,5 @@
 """
-Basic Python Lebwohl-Lasher code.  Based on the paper 
+Python Lebwohl-Lasher code Using parallel numba techniques.  Based on the paper 
 P.A. Lebwohl and G. Lasher, Phys. Rev. A, 6, 426-429 (1972).
 This version in 2D.
 
@@ -112,7 +112,7 @@ def savedat(arr,nsteps,Ts,runtime,ratio,energy,order,nmax):
     """
     # Create filename based on current date and time.
     current_datetime = datetime.datetime.now().strftime("%a-%d-%b-%Y-at-%I-%M-%S%p")
-    filename = "LL-Output-{:s}.txt".format(current_datetime)
+    filename = "Nb-Output-{:s}.txt".format(current_datetime)
     FileOut = open(filename,"w")
     # Write a header with run parameters
     print("#=====================================================",file=FileOut)
@@ -230,21 +230,31 @@ def MC_step(arr,Ts,nmax):
 	  accept/(nmax**2) (float) = acceptance ratio for current MCS.
     """
     #
-    #Pre-compute some random numbers.  This is faster than many individual calls.
-	# scale stes dist for the angle changes - increases
+    # Pre-compute some random numbers.  This is faster than
+    # using lots of individual calls.  "scale" sets the width
+    # of the distribution for the angle changes - increases
     # with temperature.
     scale = 0.1 + Ts
     accept = 0
 
+    # as unifr=rom is not supported when using njit owing ot ambiguous typing I will be using a for loop
+    # this is not a large performance loss owing to numba 
     for _ in range(nmax * nmax):
 
         # random lattice site
         ix = np.random.randint(0, nmax)
         iy = np.random.randint(0, nmax)
 
+        # random angular perturbation
         ang = np.random.normal(0.0, scale)
+
+        # old energy
         en0 = one_energy(arr, ix, iy, nmax)
+
+        # trial move
         arr[ix, iy] += ang
+
+        # new energy
         en1 = one_energy(arr, ix, iy, nmax)
 
         dE = en1 - en0
@@ -252,6 +262,7 @@ def MC_step(arr,Ts,nmax):
         if dE <= 0.0:
             accept += 1
         else:
+            # Metropolis criterion
             if np.random.random() < np.exp(-dE / Ts):
                 accept += 1
             else:
@@ -277,7 +288,7 @@ def main(program, nsteps, nmax, temp, pflag):
     lattice = initdat(nmax)
     # Plot initial frame of lattice
     plotdat(lattice,pflag,nmax)
-    #Create arrays to store energy, acceptance ratio and order parameter
+    # Create arrays to store energy, acceptance ratio and order parameter
     energy = np.zeros(nsteps+1,dtype=float)
     ratio = np.zeros(nsteps+1,dtype=float)
     order = np.zeros(nsteps+1,dtype=float)
