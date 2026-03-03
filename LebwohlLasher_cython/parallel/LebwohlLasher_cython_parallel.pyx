@@ -252,7 +252,7 @@ cdef double all_energy_mv(double[:, :] arr, int nmax) nogil:
     cdef double enall = 0.0
 
     # Parallel reduction: safe + deterministic enough for FP sums
-    for i in prange(nmax, nogil=True, reduction='+': enall):
+    for i in prange(nmax, nogil=True):
         for j in range(nmax):
             enall += one_energy_mv(arr, i, j, nmax)
     return enall
