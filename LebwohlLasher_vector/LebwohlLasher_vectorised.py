@@ -72,9 +72,7 @@ def plotdat(arr,pflag,nmax):
     cols = np.zeros((nmax,nmax))
     if pflag==1: # colour the arrows according to energy
         mpl.rc('image', cmap='rainbow')
-        for i in range(nmax):
-            for j in range(nmax):
-                cols[i,j] = one_energy(arr,i,j,nmax)
+        cols = matrix_energy(arr, nmax)
         norm = plt.Normalize(cols.min(), cols.max())
     elif pflag==2: # colour the arrows according to angle
         mpl.rc('image', cmap='hsv')
@@ -111,7 +109,7 @@ def savedat(arr,nsteps,Ts,runtime,ratio,energy,order,nmax):
     """
     # Create filename based on current date and time.
     current_datetime = datetime.datetime.now().strftime("%a-%d-%b-%Y-at-%I-%M-%S%p")
-    filename = "V-Output-{:s}.txt".format(current_datetime)
+    filename = "V_v2-Output-{:s}.txt".format(current_datetime)
     FileOut = open(filename,"w")
     # Write a header with run parameters
     print("#=====================================================",file=FileOut)
@@ -128,6 +126,38 @@ def savedat(arr,nsteps,Ts,runtime,ratio,energy,order,nmax):
         print("   {:05d}    {:6.4f} {:12.4f}  {:6.4f} ".format(i,ratio[i],energy[i],order[i]),file=FileOut)
     FileOut.close()
 #=======================================================================
+def matrix_energy(arr,nmax):
+    """
+    Arguments:
+	  arr (float(nmax,nmax)) = array that contains lattice data;
+    nmax (int) = side length of square lattice.
+    Description:
+      Function that computes the energy of a each cell in the
+      lattice taking into account periodic boundaries.  Working with
+      reduced energy (U/epsilon), equivalent to setting epsilon=1 in
+      equation (1) in the project notes.
+	  Returns:
+	  energy_matrix (float(nmax,nmax)) = array holding reduced energy of each cell.
+    """
+
+    # Shift array in both directions in x and y
+    arr_shifted_x_p = np.roll(arr, 1, axis=0)
+    arr_shifted_x_m = np.roll(arr, -1, axis=0)
+    arr_shifted_y_p = np.roll(arr, 1, axis=1)
+    arr_shifted_y_m = np.roll(arr, -1, axis=1)
+
+    # Calculate contributions from each neighbour
+    en_x_p = 0.5 * (1.0 - 3.0 * np.cos(arr - arr_shifted_x_p) ** 2)
+    en_x_m = 0.5 * (1.0 - 3.0 * np.cos(arr - arr_shifted_x_m) ** 2)
+    en_y_p = 0.5 * (1.0 - 3.0 * np.cos(arr - arr_shifted_y_p) ** 2)
+    en_y_m = 0.5 * (1.0 - 3.0 * np.cos(arr - arr_shifted_y_m) ** 2)
+
+    # Sum up the contributions from all neighbors
+    energy_matrix = en_x_p + en_x_m + en_y_p + en_y_m
+
+    return energy_matrix
+
+#=======================================================================
 def one_energy(arr,ix,iy,nmax):
     """
     Arguments:
@@ -143,19 +173,24 @@ def one_energy(arr,ix,iy,nmax):
 	Returns:
 	  en (float) = reduced energy of cell.
     """
-
-    center = arr[ix, iy]
-
-    neighbours = np.array([
-        arr[(ix+1) % nmax, iy],
-        arr[(ix-1) % nmax, iy],
-        arr[ix, (iy+1) % nmax],
-        arr[ix, (iy-1) % nmax]
-    ])
-
-    diff = center - neighbours
-
-    return np.sum(0.5 * (1 - 3*np.cos(diff)**2))
+    en = 0.0
+    ixp = (ix+1)%nmax # These are the coordinates
+    ixm = (ix-1)%nmax # of the neighbours
+    iyp = (iy+1)%nmax # with wraparound
+    iym = (iy-1)%nmax #
+#
+# Add together the 4 neighbour contributions
+# to the energy
+#
+    ang = arr[ix,iy]-arr[ixp,iy]
+    en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
+    ang = arr[ix,iy]-arr[ixm,iy]
+    en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
+    ang = arr[ix,iy]-arr[ix,iyp]
+    en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
+    ang = arr[ix,iy]-arr[ix,iym]
+    en += 0.5*(1.0 - 3.0*np.cos(ang)**2)
+    return en
 #=======================================================================
 def all_energy(arr,nmax):
     """
@@ -164,25 +199,15 @@ def all_energy(arr,nmax):
       nmax (int) = side length of square lattice.
     Description:
       Function to compute the energy of the entire lattice. Output
-      is in reduced units (U/epsilon). Vectorised using the np.roll function
-      this acts as a circular queue
+      is in reduced units (U/epsilon).
 	Returns:
 	  enall (float) = reduced energy of lattice.
     """
-    # periodic neighbours using roll
-    diff_xp = arr - np.roll(arr, -1, axis=0)
-    diff_xm = arr - np.roll(arr, 1, axis=0)
-    diff_yp = arr - np.roll(arr, -1, axis=1)
-    diff_ym = arr - np.roll(arr, 1, axis=1)
 
-    en = (
-        0.5 * (1 - 3*np.cos(diff_xp)**2) +
-        0.5 * (1 - 3*np.cos(diff_xm)**2) +
-        0.5 * (1 - 3*np.cos(diff_yp)**2) +
-        0.5 * (1 - 3*np.cos(diff_ym)**2)
-    )
+    energies = matrix_energy(arr,nmax)
+    enall = np.sum(energies.flatten())
 
-    return np.sum(en)
+    return enall
 #=======================================================================
 def get_order(arr,nmax):
     """
@@ -196,22 +221,22 @@ def get_order(arr,nmax):
 	Returns:
 	  max(eigenvalues(Qab)) (float) = order parameter for lattice.
     """
+    Qab = np.zeros((3,3))
+    delta = np.eye(3,3)
+    #
+    # Generate a 3D unit vector for each cell (i,j) and
+    # put it in a (3,i,j) array.
+    #
+    lab = np.vstack((np.cos(arr),np.sin(arr),np.zeros_like(arr))).reshape(3,nmax,nmax)
 
-    # unit vectors (3, N)
-    lab = np.stack((
-        np.cos(arr),
-        np.sin(arr),
-        np.zeros_like(arr)
-    ), axis=0).reshape(3, -1)
-
-    # Compute Q using matrix multiplication
-    Qab = (3 * lab @ lab.T) / (2 * lab.shape[1])
-
-    # subtract identity contribution
-    Qab -= np.eye(3) * 0.5
-
-    eigenvalues = np.linalg.eigvals(Qab)
-    return eigenvalues.max().real
+    for a in range(3):
+        for b in range(3):
+            Q_tensor = 3*lab[a]*lab[b] - delta[a,b]
+            Qab[a,b] = np.sum(Q_tensor.flatten())
+            
+    Qab = Qab/(2*nmax*nmax)
+    eigenvalues,eigenvectors = np.linalg.eig(Qab)
+    return eigenvalues.max()
 #=======================================================================
 def MC_step(arr,Ts,nmax):
     """
@@ -230,12 +255,19 @@ def MC_step(arr,Ts,nmax):
 	  accept/(nmax**2) (float) = acceptance ratio for current MCS.
     """
     #
-    # Pre-compute some random numbers.  This is faster than individual calls.  
+    # Pre-compute some random numbers.  This is faster than
+    # using lots of individual calls.  "scale" sets the width
+    # of the distribution for the angle changes - increases
+    # with temperature.
     scale=0.1+Ts
     accept = 0
     xran = np.random.randint(0,high=nmax, size=(nmax,nmax))
     yran = np.random.randint(0,high=nmax, size=(nmax,nmax))
     aran = np.random.normal(scale=scale, size=(nmax,nmax))
+    random_comparison = np.random.uniform(0.0,1.0, size = (nmax,nmax))
+
+
+    #en0_matrix = 
     for i in range(nmax):
         for j in range(nmax):
             ix = xran[i,j]
@@ -244,15 +276,14 @@ def MC_step(arr,Ts,nmax):
             en0 = one_energy(arr,ix,iy,nmax)
             arr[ix,iy] += ang
             en1 = one_energy(arr,ix,iy,nmax)
-            if en1<=en0:
+            boltz = np.exp( -(en1 - en0) / Ts )
+            if en1<=en0 or boltz >= random_comparison[i,j]:
                 accept += 1
             else:
                 arr[ix,iy] -= ang
+                
     return accept/(nmax*nmax)
 #=======================================================================
-
-
-
 def main(program, nsteps, nmax, temp, pflag):
     """
     Arguments:
@@ -266,55 +297,33 @@ def main(program, nsteps, nmax, temp, pflag):
     Returns:
       NULL
     """
-
+    # Create and initialise lattice
     lattice = initdat(nmax)
+    # Plot initial frame of lattice
+    plotdat(lattice,pflag,nmax)
+    # Create arrays to store energy, acceptance ratio and order parameter
+    energy = np.zeros(nsteps+1,dtype=float)
+    ratio = np.zeros(nsteps+1,dtype=float)
+    order = np.zeros(nsteps+1,dtype=float)
+    # Set initial values in arrays
+    energy[0] = all_energy(lattice,nmax)
+    ratio[0] = 0.5 # ideal value
+    order[0] = get_order(lattice,nmax)
 
-    plotdat(lattice, pflag, nmax)
-
-    energy = np.zeros(nsteps+1)
-    ratio  = np.zeros(nsteps+1)
-    order  = np.zeros(nsteps+1)
-
-    energy[0] = all_energy(lattice, nmax)
-    ratio[0]  = 0.5
-    order[0]  = get_order(lattice, nmax)
-
+    # Begin doing and timing some MC steps.
     initial = time.time()
-
-    for it in range(1, nsteps+1):
-
-        ratio[it]  = MC_step(lattice, temp, nmax)
-        energy[it] = all_energy(lattice, nmax)
-        order[it]  = get_order(lattice, nmax)
-
-    runtime = time.time() - initial
-
-    print("{}: Size: {:d}, Steps: {:d}, T*: {:5.3f}: Order: {:5.3f}, Time: {:8.6f} s"
-          .format(program, nmax, nsteps, temp, order[nsteps], runtime))
-
-    savedat(lattice, nsteps, temp, runtime, ratio, energy, order, nmax)
-
-    plotdat(lattice, pflag, nmax)
-
-#=======================================================================
-def local_energy_grid(arr):
-    '''
-    Arguments:
-        arr
-    Description: 
-        function to compute local energy using np.roll, allowing
-        for any sites energy to be accessed instantly 
-    Returns:
-        energies bordering 
-
-    '''
-
-    return (
-        0.5*(1 - 3*np.cos(arr - np.roll(arr,-1,0))**2) +
-        0.5*(1 - 3*np.cos(arr - np.roll(arr,1,0))**2) +
-        0.5*(1 - 3*np.cos(arr - np.roll(arr,-1,1))**2) +
-        0.5*(1 - 3*np.cos(arr - np.roll(arr,1,1))**2)
-    )
+    for it in range(1,nsteps+1):
+        ratio[it] = MC_step(lattice,temp,nmax)
+        energy[it] = all_energy(lattice,nmax)
+        order[it] = get_order(lattice,nmax)
+    final = time.time()
+    runtime = final-initial
+    
+    # Final outputs
+    print("{}: Size: {:d}, Steps: {:d}, T*: {:5.3f}: Order: {:5.3f}, Time: {:8.6f} s".format(program, nmax,nsteps,temp,order[nsteps-1],runtime))
+    # Plot final frame of lattice and generate output file
+    savedat(lattice,nsteps,temp,runtime,ratio,energy,order,nmax)
+    plotdat(lattice,pflag,nmax)
 #=======================================================================
 # Main part of program, getting command line arguments and calling
 # main simulation function.
