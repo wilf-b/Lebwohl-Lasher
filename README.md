@@ -6,5 +6,8 @@ To run the subsequant version of each piece of code, navigate to the correct fil
 ```Py
 python -m LebwohlLasher_{method} ITTER SIZE TEMP PLOTFLAG
 ```
+To run the mpi implementaion:
 
-with the correct filename, possible implementation names include
+```Py
+mpirun -np <np> LebwohlLasher_mpi ITTER SIZE TEMP PLOTFLAG
+``` 
