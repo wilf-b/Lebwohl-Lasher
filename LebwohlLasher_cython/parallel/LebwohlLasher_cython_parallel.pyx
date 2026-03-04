@@ -184,9 +184,9 @@ cdef inline double one_energy_mv(double[:, :] arr, int ix, int iy, int nmax) nog
       en (float) = reduced energy of cell.
     """
     cdef double en = 0.0
-    cdef int ixp = (ix+1)%nmax # These are the coordinates
-    cdef int ixm = (ix-1)%nmax # of the neighbours
-    cdef int iyp = (iy+1)%nmax # with wraparound
+    cdef int ixp = (ix+1)%nmax #
+    cdef int ixm = (ix-1)%nmax #
+    cdef int iyp = (iy+1)%nmax #
     cdef int iym = (iy-1)%nmax #
     #
     # Add together the 4 neighbour contributions
@@ -251,7 +251,6 @@ cdef double all_energy_mv(double[:, :] arr, int nmax) nogil:
     cdef int j
     cdef double enall = 0.0
 
-    # Parallel reduction: safe + deterministic enough for FP sums
     for i in prange(nmax, nogil=True):
         for j in range(nmax):
             enall += one_energy_mv(arr, i, j, nmax)
