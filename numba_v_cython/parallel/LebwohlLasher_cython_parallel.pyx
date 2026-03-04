@@ -143,7 +143,7 @@ cdef void savedat( np.ndarray[np.float64_t, ndim=2] arr, int nsteps, float Ts, f
         print("   {:05d}    {:6.4f} {:12.4f}  {:6.4f} ".format(i,ratio[i],energy[i],order[i]),file=FileOut)
     FileOut.close()
 #=======================================================================
-cdef float one_energy( np.ndarray[np.float64_t, ndim=2] arr, int ix, int iy, int nmax):
+cdef inline float one_energy( double[:, :] arr, int ix, int iy, int nmax) nogil:
     """
     Arguments:
 	  arr (float(nmax,nmax)) = array that contains lattice data;
@@ -160,8 +160,8 @@ cdef float one_energy( np.ndarray[np.float64_t, ndim=2] arr, int ix, int iy, int
     """
     cdef float en = 0.0
     cdef int ixp = (ix+1)%nmax # These are the coordinates
-    cdef int ixm = (ix-1)%nmax # of the neighbours
-    cdef int iyp = (iy+1)%nmax # with wraparound
+    cdef int ixm = (ix-1)%nmax # of neighbours with wrap
+    cdef int iyp = (iy+1)%nmax # 
     cdef int iym = (iy-1)%nmax #
 #
 # Add together the 4 neighbour contributions
@@ -193,9 +193,16 @@ cdef float all_energy( np.ndarray[np.float64_t, ndim=2] arr, int nmax):
     cdef int j
 
     cdef float enall = 0.0
-    for i in range(nmax):
-        for j in range(nmax):
-            enall += one_energy(arr,i,j,nmax)
+    cdef double[:, :] mv = arr
+    cdef Py_ssize_t idx
+    cdef Py_ssize_t N = nmax*nmax
+
+    # Parallel loop over flattened lattice
+    for idx in prange(N, nogil=True, reduction=+:enall, schedule='static'):
+        i = <int>(idx // nmax)
+        j = <int>(idx - i*nmax)
+        enall += one_energy(mv,i,j,nmax)
+
     return enall
 #=======================================================================
 cdef float get_order( np.ndarray[np.float64_t, ndim=2] arr, int nmax):
@@ -210,23 +217,54 @@ cdef float get_order( np.ndarray[np.float64_t, ndim=2] arr, int nmax):
 	Returns:
 	  max(eigenvalues(Qab)) (float) = order parameter for lattice.
     """
-    cdef np.ndarray[np.float64_t, ndim=2] Qab = np.zeros((3,3))
-    cdef np.ndarray[np.float64_t, ndim=2] delta = np.eye(3,3)
+    cdef double[:, :] mv = arr
+    cdef Py_ssize_t idx
+    cdef Py_ssize_t N = nmax*nmax
+    cdef int i, j
 
-    cdef int a,b,i,j
+    # 9 scalar accumulators for Q rather than a np array
+    cdef double q00=0.0; cdef double q01=0.0; cdef double q02=0.0
+    cdef double q10=0.0; cdef double q11=0.0; cdef double q12=0.0
+    cdef double q20=0.0; cdef double q21=0.0; cdef double q22=0.0
+
+    cdef double c, s
 
     #
     # Generate a 3D unit vector for each cell (i,j) and
     # put it in a (3,i,j) array.
     #
 
-    cdef np.ndarray[np.float64_t, ndim=3] lab = np.vstack((np.cos(arr),np.sin(arr),np.zeros_like(arr))).reshape(3,nmax,nmax)
-    for a in range(3):
-        for b in range(3):
-            for i in range(nmax):
-                for j in range(nmax):
-                    Qab[a,b] += 3*lab[a,i,j]*lab[b,i,j] - delta[a,b]
-    Qab = Qab/(2*nmax*nmax)
+    # Parallel reduction across lattice using scalars
+    for idx in prange(N, nogil=True, schedule='static',
+                      reduction=+:q00, reduction=+:q01, reduction=+:q02,
+                      reduction=+:q10, reduction=+:q11, reduction=+:q12,
+                      reduction=+:q20, reduction=+:q21, reduction=+:q22):
+
+        i = <int>(idx // nmax)
+        j = <int>(idx - i*nmax)
+
+        c = cmath.cos(mv[i,j])
+        s = cmath.sin(mv[i,j])
+
+        q00 += 3*c*c - 1
+        q01 += 3*c*s
+        q02 += 0
+
+        q10 += 3*s*c
+        q11 += 3*s*s - 1
+        q12 += 0
+
+        q20 += 0
+        q21 += 0
+        q22 += -1
+
+    cdef double norm = 1.0/(2*nmax*nmax)
+
+    cdef np.ndarray[np.float64_t, ndim=2] Qab = np.empty((3,3))
+    Qab[0,0] = q00*norm; Qab[0,1] = q01*norm; Qab[0,2] = q02*norm
+    Qab[1,0] = q10*norm; Qab[1,1] = q11*norm; Qab[1,2] = q12*norm
+    Qab[2,0] = q20*norm; Qab[2,1] = q21*norm; Qab[2,2] = q22*norm
+
     eigenvalues,eigenvectors = np.linalg.eig(Qab)
     return eigenvalues.max()
 #=======================================================================
